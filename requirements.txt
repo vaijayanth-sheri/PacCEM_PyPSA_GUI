@@ -1,0 +1,12 @@
+streamlit==1.33.0
+pandas==2.2.2
+numpy==1.26.4
+pypsa==0.35.2
+openpyxl==3.1.2
+plotly==5.22.0
+matplotlib==3.8.4
+networkx==3.3
+scipy==1.13.0
+highspy==1.7.2
+pyomo==6.7.1 	# Explicitly adding Pyomo to resolve Python 3.11+ incompatibility
+streamlit-folium
