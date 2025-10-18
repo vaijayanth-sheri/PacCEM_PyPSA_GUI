@@ -28,13 +28,9 @@ if not _highs_exe_path_set:
 
             if os.path.exists(highs_exe_full_path) and os.access(highs_exe_full_path, os.X_OK):
                 # Prepend the directory containing the executable to PATH
-                # os.pathsep is used to correctly join path elements for the OS
                 os.environ['PATH'] = highs_bin_path + os.pathsep + os.environ.get('PATH', '')
                 _highs_exe_path_set = True
-            # else: Debug messages can be added here if needed, but not for final version.
-        # else: Debug messages can be added here if needed.
     except Exception as e:
-        # Debug messages can be added here, but not for final version.
         pass # Handle silently, as Pyomo might still find it in default PATH
 
 # Store the status in session_state for frontend messaging if needed
@@ -71,7 +67,6 @@ if 'excel_sheet_names' not in st.session_state:
 if 'mapped_data' not in st.session_state:
     st.session_state.mapped_data = {}
 
-# Initialize data_mapping_mode for all component types with a default
 if 'data_mapping_mode' not in st.session_state:
     st.session_state.data_mapping_mode = {
         "buses": "Excel Mapping",
@@ -85,13 +80,13 @@ if 'data_mapping_mode' not in st.session_state:
 
 if 'manual_data' not in st.session_state:
     st.session_state.manual_data = {
-        'buses': pd.DataFrame(columns=['Bus name', 'V_nom', 'x', 'y', 'Carriers']),
+        'buses': pd.DataFrame(columns=['Bus name', 'v_nom', 'x', 'y', 'carrier', 'unit']),
         'demand': pd.DataFrame(columns=['Bus'] + [f'Time_{i}' for i in range(8760)]),
-        'generators': pd.DataFrame(columns=['Generator name', 'Bus', 'Size (MW)', 'Quantity', 'Build Year', 'Capacity(MW)', 'P_nom_min', 'P_nom_max', 'Carrier', 'Scenario', 'p_nom_extendable', 'Variable cost (USD/MWh)', 'Capital_cost (USD/MW)', 'lifetime', 'Status', 'efficiency', 'min_generation_level']), # CURRENCY
-        'transmission_lines': pd.DataFrame(columns=['From', 'To', 'type', 's_nom_extendable', 's_nom', 'Capital_cost (USD/MW/km)', 'Length (kM)']), # CURRENCY & UNIT
-        'transformers': pd.DataFrame(columns=['Location', 'bus0', 'bus1', 's_nom', 'v_nom0', 'v_nom1', 'x', 'r', 'Capital_cost (USD)']), # CURRENCY
-        'storage': pd.DataFrame(columns=['name', 'Capacity(MW)', 'Year', 'Carrier', 'Bus', 'Scenario', 'e_nom_extendable', 'Variable cost (USD/MWh)', 'Capital_cost (USD/MWh)', 'lifetime', 'Status']), # CURRENCY
-        'generation_profiles': pd.DataFrame(columns=['Solar profile', 'Wind profile', 'Hydro profile']),
+        'generators': pd.DataFrame(columns=['Generator name', 'Bus', 'Capacity(MW)', 'Size (MW)', 'Quantity', 'Build Year', 'P_nom_min', 'P_nom_max', 'Carrier', 'Scenario', 'p_nom_extendable', 'Marginal cost (USD/MWh)', 'Capital_cost (USD/MW)', 'fixed_O&M (USD/MW)', 'lifetime', 'Status', 'efficiency', 'min_generation_level']),
+        'transmission_lines': pd.DataFrame(columns=['From', 'To', 'type', 's_nom_extendable', 's_nom', 'Capital_cost (USD/MVA)', 'Length (kM)']),
+        'transformers': pd.DataFrame(columns=['Location', 'bus0', 'bus1', 's_nom', 'v_nom0', 'v_nom1', 'x', 'r', 'Capital_cost (USD/MW)']),
+        'storage': pd.DataFrame(columns=['name', 'p_nom (MW)', 'e_nom (MWh)', 'Year', 'Carrier', 'Bus', 'Scenario', 'e_nom_extendable', 'Marginal cost (USD/MWh)', 'Capital_cost (USD/MWh)', 'lifetime', 'Status' ]),
+        'generation_profiles': pd.DataFrame(columns=['Solar profile', 'Solar Rooftop profile', 'Wind profile', 'Hydro profile']), # Added Solar Rooftop profile
     }
 if 'simulation_results' not in st.session_state:
     st.session_state.simulation_results = None
