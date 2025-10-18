@@ -4,7 +4,7 @@ import folium
 from streamlit_folium import folium_static
 import io
 import time
-from backend.model_runner import run_model, get_renewable_carriers # Keep get_renewable_carriers here
+from backend.model_runner import run_model, get_renewable_carriers 
 import os
 from datetime import datetime
 import shutil
@@ -12,8 +12,8 @@ import linopy # For checking available solvers
 import plotly.express as px # For plotting results
 import plotly.graph_objects as go # For more custom plots
 
-# Helper function to create a Folium map with markers
-def create_network_map(df_buses, df_new_generators=None):
+# Helper function to create a Folium map with markers and connections
+def create_network_map(n_results, df_buses, df_new_generators=None): # Now accepts n_results directly for connections
     if df_buses.empty:
         return None
 
@@ -22,15 +22,25 @@ def create_network_map(df_buses, df_new_generators=None):
         return folium.Map(location=[0, 0], zoom_start=2)
         
     map_center = [valid_buses['lat'].mean(), valid_buses['lon'].mean()]
-    m = folium.Map(location=map_center, zoom_start=6)
+    m = folium.Map(location=map_center, zoom_start=5, height=900) # CORRECTED: Increased map height to 900 for ~3/4 screen
 
+    # Dictionary to quickly look up bus coordinates by name
+    bus_coords = {row['name']: (row['lat'], row['lon']) for idx, row in valid_buses.iterrows()}
+
+    # Add existing bus locations (with enhanced popups)
     for idx, row in valid_buses.iterrows():
+        bus_name = row['name']
+        popup_html = f"<b>Bus:</b> {bus_name}<br>" \
+                     f"<b>V_nom:</b> {row.get('v_nom', 'N/A')}<br>" \
+                     f"<b>Carrier:</b> {row.get('carrier', 'N/A')}<br>" \
+                     f"<b>Unit:</b> {row.get('unit', 'N/A')}"
         folium.Marker(
             location=[row['lat'], row['lon']],
-            popup=f"Bus: {row['name']}",
-            tooltip=row['name']
+            popup=folium.Popup(popup_html, max_width=300),
+            tooltip=bus_name
         ).add_to(m)
     
+    # Add newly built/expanded generators (with enhanced popups)
     if df_new_generators is not None and not df_new_generators.empty:
         df_new_generators_filtered = df_new_generators.dropna(subset=['lat', 'lon'])
         df_new_generators_filtered = df_new_generators_filtered[df_new_generators_filtered['p_nom_opt'] > 0]
@@ -44,6 +54,12 @@ def create_network_map(df_buses, df_new_generators=None):
                     radius = 5 + 15 * ((row['p_nom_opt'] - min_capacity) / (max_capacity - min_capacity))
                 else:
                     radius = 10 if max_capacity > 0 else 5
+                
+                popup_html = f"<b>New Gen:</b> {row['name']}<br>" \
+                             f"<b>Bus:</b> {row['bus']}<br>" \
+                             f"<b>Carrier:</b> {row['carrier']}<br>" \
+                             f"<b>Initial Cap:</b> {row.get('p_nom_initial', 'N/A'):.2f} MW<br>" \
+                             f"<b>Optimized Cap:</b> {row['p_nom_opt']:.2f} MW"
 
                 folium.CircleMarker(
                     location=[row['lat'], row['lon']],
@@ -52,9 +68,87 @@ def create_network_map(df_buses, df_new_generators=None):
                     fill=True,
                     fill_color='orange',
                     fill_opacity=0.7,
-                    popup=f"New Gen: {row['name']}<br>Carrier: {row['carrier']}<br>Capacity: {row['p_nom_opt']:.2f} MW",
+                    popup=folium.Popup(popup_html, max_width=300),
                     tooltip=f"New {row['carrier']} ({row['p_nom_opt']:.2f} MW)"
                 ).add_to(m)
+
+    # --- ADDED: Draw Lines (Transmission Lines) ---
+    if hasattr(n_results, 'lines') and not n_results.lines.empty:
+        max_s_nom_line = n_results.lines.s_nom_opt.max() if not n_results.lines.s_nom_opt.empty else n_results.lines.s_nom.max() if not n_results.lines.s_nom.empty else 1
+        for idx, line in n_results.lines.iterrows():
+            bus0_name = line['bus0']
+            bus1_name = line['bus1']
+            if bus0_name in bus_coords and bus1_name in bus_coords:
+                points = [bus_coords[bus0_name], bus_coords[bus1_name]]
+                popup_html = f"<b>Line:</b> {idx}<br>" \
+                             f"<b>From:</b> {bus0_name}<br>" \
+                             f"<b>To:</b> {bus1_name}<br>" \
+                             f"<b>Type:</b> {line.get('type', 'N/A')}<br>" \
+                             f"<b>S_nom:</b> {line.get('s_nom', 'N/A'):.2f} MVA<br>" \
+                             f"<b>S_nom_opt:</b> {line.get('s_nom_opt', line.get('s_nom', 'N/A')):.2f} MVA<br>" \
+                             f"<b>Length:</b> {line.get('length', 'N/A'):.2f} km"
+                
+                line_weight = line.get('s_nom_opt', line.get('s_nom', 1)) / max_s_nom_line * 5 # Scale weight, max 5px
+                folium.PolyLine(
+                    locations=points,
+                    color='blue',
+                    weight=max(1, line_weight), # Minimum weight 1 for visibility
+                    opacity=0.7,
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"Line {idx}: {bus0_name}-{bus1_name} ({line.get('s_nom_opt', line.get('s_nom', 'N/A')):.0f} MVA)"
+                ).add_to(m)
+
+    # --- ADDED: Draw Links (e.g., Storage Links) ---
+    if hasattr(n_results, 'links') and not n_results.links.empty:
+        max_p_nom_link = n_results.links.p_nom_opt.max() if not n_results.links.p_nom_opt.empty else n_results.links.p_nom.max() if not n_results.links.p_nom.empty else 1
+        for idx, link in n_results.links.iterrows():
+            bus0_name = link['bus0']
+            bus1_name = link['bus1']
+            if bus0_name in bus_coords and bus1_name in bus_coords:
+                points = [bus_coords[bus0_name], bus_coords[bus1_name]]
+                popup_html = f"<b>Link:</b> {idx}<br>" \
+                             f"<b>From:</b> {bus0_name}<br>" \
+                             f"<b>To:</b> {bus1_name}<br>" \
+                             f"<b>Carrier:</b> {link.get('carrier', 'N/A')}<br>" \
+                             f"<b>P_nom:</b> {link.get('p_nom', 'N/A'):.2f} MW<br>" \
+                             f"<b>P_nom_opt:</b> {link.get('p_nom_opt', 'N/A'):.2f} MW"
+                
+                link_color = 'green' if link.get('carrier') == 'battery_link' else 'purple'
+                link_weight = link.get('p_nom_opt', link.get('p_nom', 1)) / max_p_nom_link * 4 # Scale weight, max 4px
+
+                folium.PolyLine(
+                    locations=points,
+                    color=link_color,
+                    weight=max(1, link_weight),
+                    opacity=0.7,
+                    dash_array='5, 5', # Dashed lines for links
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"Link {idx}: {bus0_name}-{bus1_name} ({link.get('p_nom_opt', link.get('p_nom', 'N/A')):.0f} MW)"
+                ).add_to(m)
+    
+    # --- ADDED: Draw Transformers ---
+    if hasattr(n_results, 'transformers') and not n_results.transformers.empty:
+        max_s_nom_transformer = n_results.transformers.s_nom.max() if not n_results.transformers.s_nom.empty else 1
+        for idx, transformer in n_results.transformers.iterrows():
+            bus0_name = transformer['bus0']
+            bus1_name = transformer['bus1']
+            if bus0_name in bus_coords and bus1_name in bus_coords:
+                points = [bus_coords[bus0_name], bus_coords[bus1_name]]
+                popup_html = f"<b>Transformer:</b> {idx}<br>" \
+                             f"<b>From:</b> {bus0_name}<br>" \
+                             f"<b>To:</b> {bus1_name}<br>" \
+                             f"<b>S_nom:</b> {transformer.get('s_nom', 'N/A'):.2f} MVA"
+                
+                transformer_weight = transformer.get('s_nom', 1) / max_s_nom_transformer * 3 # Scale weight, max 3px
+                folium.PolyLine(
+                    locations=points,
+                    color='gray',
+                    weight=max(1, transformer_weight),
+                    opacity=0.8,
+                    popup=folium.Popup(popup_html, max_width=300),
+                    tooltip=f"Transformer {idx}: {bus0_name}-{bus1_name} ({transformer.get('s_nom', 'N/A') :.0f} MVA)"
+                ).add_to(m)
+
     return m
 
 def show_tab():
@@ -80,8 +174,12 @@ def show_tab():
         if not all([st.session_state.project_data.get('project_name'),
                     st.session_state.project_data.get('results_dir'),
                     st.session_state.project_data.get('scenario_name'),
-                    st.session_state.project_data.get('solver')]):
-            st.error("Missing mandatory project or scenario details. Please complete the 'Project' tab.")
+                    st.session_state.project_data.get('solver'),
+                    st.session_state.project_data.get('scenario_year') is not None,
+                    (st.session_state.project_data.get('demand_projection_method') == "Target Peak Demand" and st.session_state.project_data.get('target_peak_demand') is not None) or \
+                    (st.session_state.project_data.get('demand_projection_method') == "Percentage Growth" and st.session_state.project_data.get('demand_growth_percentage') is not None)
+                    ]):
+            st.error("Missing mandatory project or scenario details (Project Name, Results Dir, Scenario Name, Solver, Scenario Year, Demand Projection). Please complete the 'Project' tab.")
             return
 
         has_bus_data = False
@@ -149,23 +247,26 @@ def show_tab():
                     else:
                         data_for_model[df_key] = st.session_state.manual_data.get(comp_type, pd.DataFrame()).copy()
 
-            data_for_model['df_scenario_year'] = pd.DataFrame({'Scenario': [st.session_state.project_data['scenario_number']], 'Year': [2023]})
+            data_for_model['df_scenario_year'] = pd.DataFrame({'Scenario': [st.session_state.project_data['scenario_number']], 'Year': [st.session_state.project_data['scenario_year']]}) 
 
             for item in run_model(
-                project_name=st.session_state.project_data['project_name'],
+                data_file=io.BytesIO(st.session_state.excel_file_buffer),
                 results_dir=st.session_state.project_data['results_dir'],
                 solver=st.session_state.project_data['solver'],
                 co2_cap=st.session_state.project_data['co2_cap'],
                 re_share=st.session_state.project_data['re_share'],
                 slack_cost=st.session_state.project_data['slack_cost'],
                 discount_rate=st.session_state.project_data['discount_rate'],
-                demand_growth=st.session_state.project_data['demand_growth'],
                 tech_cost_multipliers=st.session_state.project_data['tech_cost_multipliers'],
                 scenario_name=st.session_state.project_data['scenario_name'],
                 scenario_number=st.session_state.project_data['scenario_number'],
                 line_expansion=st.session_state.project_data['line_expansion'],
                 enabled_techs=st.session_state.project_data['enabled_techs'],
                 default_new_gen_extendable=st.session_state.project_data['default_new_gen_extendable'],
+                scenario_year=st.session_state.project_data['scenario_year'],
+                target_peak_demand=st.session_state.project_data['target_peak_demand'],
+                demand_projection_method=st.session_state.project_data['demand_projection_method'],
+                demand_growth_percentage=st.session_state.project_data['demand_growth_percentage'],
                 df_buses=data_for_model.get('df_buses', pd.DataFrame()),
                 df_generators=data_for_model.get('df_generators', pd.DataFrame()),
                 df_load=data_for_model.get('df_load', pd.DataFrame()),
@@ -212,8 +313,9 @@ def show_tab():
         with tab_map:
             st.subheader("Network Overview (Map)")
             
-            bus_df_for_map = original_df_buses[['Bus name', 'x', 'y']].rename(columns={'x': 'lon', 'y': 'lat', 'Bus name': 'name'})
-            bus_df_for_map = bus_df_for_map.dropna(subset=['lat', 'lon'])
+            bus_df_for_map = original_df_buses.copy()
+            bus_df_for_map = bus_df_for_map.rename(columns={'Bus name': 'name', 'x': 'lon', 'y': 'lat'})
+            bus_df_for_map = bus_df_for_map.dropna(subset=['lon', 'lat'])
 
             df_optimized_generators = n_results.generators[n_results.generators.p_nom_opt > 0].copy()
             df_new_generators_map = pd.DataFrame()
@@ -229,8 +331,8 @@ def show_tab():
                     (df_new_generators_map['p_nom_opt'] > 0)
                 ].copy()
 
-
-            map_object = create_network_map(bus_df_for_map, df_new_generators_map)
+            # Pass n_results to the map function for connections
+            map_object = create_network_map(n_results, bus_df_for_map, df_new_generators_map)
             if map_object:
                 folium_static(map_object)
             else:
@@ -239,23 +341,11 @@ def show_tab():
         with tab_plots:
             st.subheader("Simulation Results (Plots)")
 
-            # --- Extract common data needed for multiple plots and key metrics ---
-            # These values should be consistently calculated from the network object
-            # and potentially stored in session_state or passed from model_runner for consistency
-            
-            # Recalculate directly from n_results for consistency
             total_annual_demand_MWh = n_results.loads_t.p_set.sum().sum() if not n_results.loads_t.p_set.empty else 0
-            
-            # Renewable generation in MWh
             renewable_generation_MWh = n_results.generators_t.p.loc[:, n_results.generators.carrier.isin(get_renewable_carriers())].sum().sum() if not n_results.generators_t.p.empty else 0
-            
-            # Total CO2 emissions in tons/year
             total_co2_emissions_tons = (n_results.generators_t.p.sum().groupby(n_results.generators.carrier).sum() * n_results.carriers.co2_emissions).sum() if not n_results.generators_t.p.empty and 'co2_emissions' in n_results.carriers.columns else 0
 
-            # Installed capacity series (MW)
             installed_capacity_series = n_results.generators.groupby('carrier').p_nom_opt.sum() if not n_results.generators.empty else pd.Series()
-            
-            # Total generation series (GWh/year)
             total_generation_series_GWh = n_results.generators_t.p.sum().groupby(n_results.generators.carrier).sum() / 1e3 if not n_results.generators_t.p.empty else pd.Series()
             
             # --- Key Metrics Summary Table ---
@@ -294,13 +384,16 @@ def show_tab():
             df_key_metrics = pd.DataFrame(metrics_data)
             st.dataframe(df_key_metrics, hide_index=True, use_container_width=True)
 
-            st.markdown("---") # Separator
+            st.markdown("---")
 
 
             # --- Plot 1: Optimal Generation Capacity & Investment Decisions ---
             st.markdown("### 1. Optimal Generation Capacity & Investment Decisions")
             if not installed_capacity_series.empty:
                 df_capacity = installed_capacity_series.reset_index(name='Capacity (MW)')
+                if 'slack' in df_capacity['carrier'].values: # CORRECTED: Drop slack from capacity plot
+                    df_capacity = df_capacity[df_capacity['carrier'] != 'slack']
+
                 fig1 = px.bar(df_capacity, x='carrier', y='Capacity (MW)',
                               title='Optimized Total Installed Capacity by Carrier', labels={'carrier': 'Carrier'})
                 st.plotly_chart(fig1, use_container_width=True)
@@ -308,23 +401,28 @@ def show_tab():
                 st.markdown("#### Investment Decisions Table")
                 df_investment_decisions = n_results.generators[
                     (n_results.generators.p_nom_extendable == True) &
-                    (n_results.generators.p_nom_opt > 0)
+                    (n_results.generators.p_nom_opt > 0) # Only consider investments where opt capacity > 0
                 ].copy()
                 
                 if not df_investment_decisions.empty:
-                    df_investment_decisions = df_investment_decisions[[
-                        'bus', 'carrier', 'p_nom_initial', 'p_nom_opt', 'capital_cost'
-                    ]].rename(columns={
-                        'p_nom_initial': 'Initial Capacity (MW)',
-                        'p_nom_opt': 'Optimized Capacity (MW)',
-                        'capital_cost': 'Annuitized Capital Cost (USD/MW/year)'
-                    })
-                    df_investment_decisions['New Capacity Built (MW)'] = df_investment_decisions['Optimized Capacity (MW)'] - df_investment_decisions['Initial Capacity (MW)']
-                    df_investment_decisions['Annual Investment Cost (USD/year)'] = df_investment_decisions['New Capacity Built (MW)'] * df_investment_decisions['Annuitized Capital Cost (USD/MW/year)']
-                    
-                    st.dataframe(df_investment_decisions[['bus', 'carrier', 'Initial Capacity (MW)', 'Optimized Capacity (MW)', 'New Capacity Built (MW)', 'Annual Investment Cost (USD/year)']])
+                    df_investment_decisions['New Capacity Built (MW)'] = df_investment_decisions['p_nom_opt'] - df_investment_decisions['p_nom_initial']
+                    # CORRECTED: Filter for positive new builds and calculate investment cost ONLY for positive builds
+                    df_investment_decisions = df_investment_decisions[df_investment_decisions['New Capacity Built (MW)'] > 0].copy()
+
+                    if not df_investment_decisions.empty:
+                        df_investment_decisions['Annual Investment Cost (USD/year)'] = df_investment_decisions['New Capacity Built (MW)'] * df_investment_decisions['capital_cost'] # capital_cost is already annuitized
+
+                        df_investment_decisions = df_investment_decisions[[
+                            'bus', 'carrier', 'p_nom_initial', 'p_nom_opt', 'New Capacity Built (MW)', 'Annual Investment Cost (USD/year)'
+                        ]].rename(columns={
+                            'p_nom_initial': 'Initial Capacity (MW)',
+                            'p_nom_opt': 'Optimized Capacity (MW)',
+                        })
+                        st.dataframe(df_investment_decisions)
+                    else:
+                        st.info("No new generator capacity was built (or expanded) in this scenario.")
                 else:
-                    st.info("No new generator capacity was built in this scenario.")
+                    st.info("No new generator capacity was built (or expanded) in this scenario.")
             else:
                 st.info("No generator capacity data available for plotting investment decisions.")
 
@@ -337,6 +435,9 @@ def show_tab():
                 st.markdown("#### Capacity Mix (MW)")
                 if not installed_capacity_series.empty:
                     df_capacity_mix = installed_capacity_series.reset_index(name='Capacity (MW)')
+                    if 'slack' in df_capacity_mix['carrier'].values: # Drop slack from pie chart
+                        df_capacity_mix = df_capacity_mix[df_capacity_mix['carrier'] != 'slack']
+                    
                     fig2_cap = px.pie(df_capacity_mix, values='Capacity (MW)', names='carrier',
                                       title='Optimized Capacity Mix', hole=0.3)
                     st.plotly_chart(fig2_cap, use_container_width=True)
@@ -356,37 +457,71 @@ def show_tab():
 
             # --- Plot 3: Cost Breakdown ---
             st.markdown("### 3. Cost Breakdown")
-            if n_results.objective is not None and not n_results.generators.empty:
-                gen_capital_cost = (n_results.generators.capital_cost * n_results.generators.p_nom_opt).sum()
-                
-                store_capital_cost = (n_results.stores.capital_cost * n_results.stores.e_nom_opt).sum() if not n_results.stores.empty else 0
-                link_capital_cost = (n_results.links.capital_cost * n_results.links.p_nom_opt).sum() if not n_results.links.empty else 0
-                line_capital_cost = (n_results.lines.capital_cost * n_results.lines.s_nom_opt).sum() if not n_results.lines.empty else 0
-                transformer_capital_cost = (n_results.transformers.capital_cost * n_results.transformers.s_nom).sum() if not n_results.transformers.empty else 0
-                total_marginal_cost = (n_results.generators_t.p * n_results.generators.marginal_cost).sum().sum()
-                slack_cost_value = (n_results.generators_t.p['slack'] * n_results.generators.loc['slack', 'marginal_cost']).sum() if 'slack' in n_results.generators.index else 0
+            cost_breakdown_view = st.radio(
+                "Cost Breakdown View:",
+                ("By Cost Type", "By Carrier (Generators)"),
+                key="cost_breakdown_view_toggle"
+            )
 
-                calculated_costs = {
-                    'Generator Capital (USD/year)': gen_capital_cost,
-                    'Generator Marginal (USD/year)': total_marginal_cost,
-                    'Storage Capital (USD/year)': store_capital_cost,
-                    'Link Capital (USD/year)': link_capital_cost,
-                    'Line Capital (USD/year)': line_capital_cost,
-                    'Transformer Capital (USD/year)': transformer_capital_cost,
-                    'Slack Cost (USD/year)': slack_cost_value
-                }
-                
-                df_costs_breakdown = pd.DataFrame(list(calculated_costs.items()), columns=['Cost Type', 'Amount (USD/year)'])
-                df_costs_breakdown = df_costs_breakdown[df_costs_breakdown['Amount (USD/year)'] > 0]
+            if cost_breakdown_view == "By Cost Type":
+                if n_results.objective is not None and not n_results.generators.empty:
+                    gen_capital_cost = (n_results.generators.capital_cost * n_results.generators.p_nom_opt).sum()
+                    gen_fixed_operation_cost = (n_results.generators.fixed_operation_cost * n_results.generators.p_nom_opt).sum() if 'fixed_operation_cost' in n_results.generators.columns else 0
+                    
+                    store_capital_cost = (n_results.stores.capital_cost * n_results.stores.e_nom_opt).sum() if not n_results.stores.empty else 0
+                    link_capital_cost = (n_results.links.capital_cost * n_results.links.p_nom_opt).sum() if not n_results.links.empty else 0
+                    line_capital_cost = (n_results.lines.capital_cost * n_results.lines.s_nom_opt).sum() if not n_results.lines.empty else 0
+                    transformer_capital_cost = (n_results.transformers.capital_cost * n_results.transformers.s_nom).sum() if not n_results.transformers.empty else 0
+                    total_marginal_cost = (n_results.generators_t.p * n_results.generators.marginal_cost).sum().sum()
+                    slack_cost_value = (n_results.generators_t.p['slack'] * n_results.generators.loc['slack', 'marginal_cost']).sum() if 'slack' in n_results.generators.index else 0
 
-                if not df_costs_breakdown.empty:
-                    fig3 = px.bar(df_costs_breakdown, x='Cost Type', y='Amount (USD/year)',
-                                  title='Annual System Cost Breakdown', labels={'Amount (USD/year)': 'Amount (USD/year)'})
-                    st.plotly_chart(fig3, use_container_width=True)
+                    calculated_costs = {
+                        'Generator Capital (USD/year)': gen_capital_cost,
+                        'Generator Fixed O&M (USD/year)': gen_fixed_operation_cost,
+                        'Generator Variable (USD/year)': total_marginal_cost,
+                        'Storage Capital (USD/year)': store_capital_cost,
+                        'Link Capital (USD/year)': link_capital_cost,
+                        'Line Capital (USD/year)': line_capital_cost,
+                        'Transformer Capital (USD/year)': transformer_capital_cost,
+                        'Slack Cost (USD/year)': slack_cost_value
+                    }
+                    
+                    df_costs_breakdown = pd.DataFrame(list(calculated_costs.items()), columns=['Cost Type', 'Amount (USD/year)'])
+                    df_costs_breakdown = df_costs_breakdown[df_costs_breakdown['Amount (USD/year)'] > 0]
+
+                    if not df_costs_breakdown.empty:
+                        fig3 = px.bar(df_costs_breakdown, x='Cost Type', y='Amount (USD/year)',
+                                      title='Annual System Cost Breakdown - By Cost Type', labels={'Amount (USD/year)': 'Amount (USD/year)'})
+                        st.plotly_chart(fig3, use_container_width=True)
+                    else:
+                        st.info("No significant cost components found for plotting.")
                 else:
-                    st.info("No significant cost components found for plotting.")
-            else:
-                st.info("Cost breakdown data not available (optimization might not have run or failed).")
+                    st.info("Cost breakdown data not available (optimization might not have run or failed).")
+            
+            else: # By Carrier (Generators)
+                st.markdown("#### Annual System Cost Breakdown - By Generator Carrier")
+                if not n_results.generators.empty and not n_results.generators_t.p.empty:
+                    df_gen_costs = n_results.generators.copy()
+                    df_gen_costs['annual_capital_cost'] = df_gen_costs['capital_cost'] * df_gen_costs['p_nom_opt']
+                    df_gen_costs['annual_fixed_om_cost'] = df_gen_costs['fixed_operation_cost'] * df_gen_costs['p_nom_opt'] if 'fixed_operation_cost' in df_gen_costs.columns else 0
+                    
+                    gen_annual_dispatch_MWh = n_results.generators_t.p.sum()
+                    df_gen_costs['annual_variable_cost'] = gen_annual_dispatch_MWh * df_gen_costs['marginal_cost']
+                    df_gen_costs['total_annual_cost'] = df_gen_costs['annual_capital_cost'] + df_gen_costs['annual_fixed_om_cost'] + df_gen_costs['annual_variable_cost']
+
+                    df_costs_by_carrier = df_gen_costs.groupby('carrier')['total_annual_cost'].sum().reset_index(name='Total Annual Cost (USD/year)')
+                    
+                    if 'slack' in df_costs_by_carrier['carrier'].values:
+                        df_costs_by_carrier = df_costs_by_carrier[df_costs_by_carrier['carrier'] != 'slack']
+
+                    if not df_costs_by_carrier.empty:
+                        fig3_carrier = px.bar(df_costs_by_carrier, x='carrier', y='Total Annual Cost (USD/year)',
+                                              title='Annual System Cost by Generator Carrier', labels={'carrier': 'Carrier'})
+                        st.plotly_chart(fig3_carrier, use_container_width=True)
+                    else:
+                        st.info("No generator carrier costs found for plotting.")
+                else:
+                    st.info("Generator data not available for cost breakdown by carrier.")
 
 
             # --- Plot 4: CO₂ Emissions (and RE share) ---
@@ -397,14 +532,16 @@ def show_tab():
                 st.markdown("#### Annual CO₂ Emissions")
                 co2_cap_value = st.session_state.project_data.get('co2_cap')
                 
-                data_co2 = {'Metric': ['Total Emissions (tons)', 'CO2 Cap (tons)'],
-                            'Value': [total_co2_emissions_tons, co2_cap_value if co2_cap_value is not None else total_co2_emissions_tons * 1.2]}
-
-                df_co2 = pd.DataFrame(data_co2)
+                data_co2_metrics = []
+                data_co2_metrics.append({'Metric': 'Total Emissions (tons)', 'Value': total_co2_emissions_tons})
+                if co2_cap_value is not None and co2_cap_value > 0: # Corrected: Only add cap if it's active
+                    data_co2_metrics.append({'Metric': 'CO2 Cap (tons)', 'Value': co2_cap_value})
+                
+                df_co2 = pd.DataFrame(data_co2_metrics)
                 
                 fig4_co2 = px.bar(df_co2, x='Metric', y='Value',
                                   title='Annual CO₂ Emissions vs. Cap', labels={'Value': 'Tons CO₂'})
-                if co2_cap_value is not None:
+                if co2_cap_value is not None and co2_cap_value > 0: # Corrected: Only add hline if cap is active
                     fig4_co2.add_hline(y=co2_cap_value, line_dash="dash", line_color="red", annotation_text="CO2 Cap", annotation_position="top right")
                 st.plotly_chart(fig4_co2, use_container_width=True)
                 st.metric(label="Total Annual CO₂ Emissions", value=f"{total_co2_emissions_tons:.2f} tons")
@@ -416,15 +553,18 @@ def show_tab():
                     achieved_re_share = (renewable_generation_MWh / total_annual_demand_MWh) * 100
                 
                 re_share_target = st.session_state.project_data.get('re_share')
-                re_share_target_percent = re_share_target * 100 if re_share_target is not None else achieved_re_share * 1.1
+                re_share_target_percent = re_share_target * 100 if re_share_target is not None else achieved_re_share * 1.1 # Default if no target set
 
-                data_re = {'Metric': ['Achieved RE Share (%)', 'RE Share Target (%)'],
-                           'Value': [achieved_re_share, re_share_target_percent]}
-                df_re = pd.DataFrame(data_re)
+                data_re_metrics = []
+                data_re_metrics.append({'Metric': 'Achieved RE Share (%)', 'Value': achieved_re_share})
+                if re_share_target is not None and re_share_target > 0: # Corrected: Only add target if active
+                    data_re_metrics.append({'Metric': 'RE Share Target (%)', 'Value': re_share_target * 100})
+
+                df_re = pd.DataFrame(data_re_metrics)
 
                 fig4_re = px.bar(df_re, x='Metric', y='Value',
                                  title='Achieved RE Share vs. Target', labels={'Value': 'Percentage (%)'})
-                if re_share_target is not None:
+                if re_share_target is not None and re_share_target > 0: # Corrected: Only add hline if target is active
                     fig4_re.add_hline(y=re_share_target*100, line_dash="dash", line_color="green", annotation_text="RE Target", annotation_position="top right")
                 st.plotly_chart(fig4_re, use_container_width=True)
                 st.metric(label="Achieved RE Share", value=f"{achieved_re_share:.2f}%")
@@ -440,24 +580,19 @@ def show_tab():
                 st.plotly_chart(fig5_soc, use_container_width=True)
 
                 st.markdown("#### Total Storage Charging/Discharging Power over time")
-                df_links = n_results.links[n_results.links.carrier.isin(['storage_charge', 'storage_discharge'])].copy()
-                if not df_links.empty and not n_results.links_t.p.empty:
-                    total_charge_power_t = n_results.links_t.p[df_links[df_links.carrier == 'storage_charge'].index].sum(axis=1)
-                    total_discharge_power_t = n_results.links_t.p[df_links[df_links.carrier == 'storage_discharge'].index].sum(axis=1)
+                df_battery_links = n_results.links[n_results.links.carrier == 'battery_link'].copy()
+                if not df_battery_links.empty and hasattr(n_results.links_t, 'p0') and not n_results.links_t.p0.empty:
+                    total_battery_power = n_results.links_t.p0[df_battery_links.index].sum(axis=1)
 
                     df_charge_discharge = pd.DataFrame({
-                        'Charging Power (MW)': total_charge_power_t.apply(lambda x: -x if x < 0 else 0),
-                        'Discharging Power (MW)': total_discharge_power_t.apply(lambda x: x if x > 0 else 0)
+                        'Charging Power (MW)': total_battery_power.apply(lambda x: -x if x < 0 else 0),
+                        'Discharging Power (MW)': total_battery_power.apply(lambda x: x if x > 0 else 0)
                     }, index=n_results.snapshots)
                     
-                    df_charge_discharge['Charging Power (MW)'] = df_charge_discharge['Charging Power (MW)'].abs()
-                    df_charge_discharge['Discharging Power (MW)'] = df_charge_discharge['Discharging Power (MW)'].abs()
-
                     fig5_power = px.area(df_charge_discharge, title='Total System Storage Charging/Discharging Power (MW)',
                                          labels={'value': 'Power (MW)', 'index': 'Time'},
                                          color_discrete_map={'Charging Power (MW)': 'blue', 'Discharging Power (MW)': 'green'})
                     st.plotly_chart(fig5_power, use_container_width=True)
-
                 else:
                     st.info("No storage charging/discharging power data available.")
             else:
@@ -466,12 +601,13 @@ def show_tab():
             # --- NEW: Hourly Dispatch Plot ---
             st.markdown("### 6. Hourly Generation Dispatch")
             if not n_results.generators_t.p.empty:
-                # Aggregate dispatch by carrier
                 df_hourly_dispatch = n_results.generators_t.p.groupby(n_results.generators.carrier, axis=1).sum()
+                if 'slack' in df_hourly_dispatch.columns:
+                    df_hourly_dispatch = df_hourly_dispatch.drop(columns=['slack'])
+
                 df_hourly_dispatch.index.name = 'Time'
 
                 if not df_hourly_dispatch.empty:
-                    # Melt for plotly express stacked area chart
                     df_plot_dispatch = df_hourly_dispatch.reset_index().melt(
                         'Time', var_name='Carrier', value_name='Dispatch (MW)'
                     )
@@ -484,7 +620,6 @@ def show_tab():
                     st.info("No hourly dispatch data available for plotting.")
             else:
                 st.info("No generator dispatch data available for hourly plotting.")
-            # --- END NEW ---
 
     else:
         st.info("Run a simulation first to view results.")

@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import io
+from datetime import datetime # Import datetime for current year default
 
 def show_tab():
     st.title("Project Setup & Scenario Configuration")
@@ -60,10 +61,9 @@ def show_tab():
         st.session_state.project_data['discount_rate'] = st.session_state.project_data['discount_rate_display'] / 100.0
 
     with col3:
-        # Increased default slack cost significantly to encourage dispatch of other generators
         st.session_state.project_data['slack_cost'] = st.number_input(
             "Slack Cost (USD/MWh)",
-            value=st.session_state.project_data.get('slack_cost', 10000.0), # Increased default significantly
+            value=st.session_state.project_data.get('slack_cost', 10000.0),
             min_value=0.0, step=100.0, format="%.1f",
             help="Cost of unmet demand (value of lost load). Set high to avoid unserved energy."
         )
@@ -96,14 +96,37 @@ def show_tab():
             st.session_state.project_data['re_share'] = st.session_state.project_data['re_share_display'] / 100.0
 
     with col6:
-        st.session_state.project_data['demand_growth_display'] = st.number_input(
-            "Demand Growth (%)",
-            value=st.session_state.project_data.get('demand_growth_display', 4.0),
-            min_value=-100.0, step=0.1, format="%.1f",
-            help="Annual percentage growth in electricity demand relative to base year."
+        st.session_state.project_data['scenario_year'] = st.number_input(
+            "Scenario Year",
+            value=st.session_state.project_data.get('scenario_year', datetime.now().year),
+            min_value=1900, max_value=2100, step=1,
+            help="The target year for the simulation scenario. Used for demand scaling and snapshots."
         )
-        st.session_state.project_data['demand_growth'] = st.session_state.project_data['demand_growth_display'] / 100.0
+        demand_projection_method = st.radio(
+            "Choose Demand Projection Method:",
+            ("Target Peak Demand", "Percentage Growth"),
+            key="demand_projection_method",
+            index=0 if st.session_state.project_data.get('demand_projection_method', "Target Peak Demand") == "Target Peak Demand" else 1
+        )
+        st.session_state.project_data['demand_projection_method'] = demand_projection_method
 
+        if demand_projection_method == "Target Peak Demand":
+            st.session_state.project_data['target_peak_demand'] = st.number_input(
+                "Target Peak Demand (MW)",
+                value=st.session_state.project_data.get('target_peak_demand', 100.0),
+                min_value=0.0, step=1.0, format="%.1f",
+                help="The peak demand in MW for the scenario year. The base load profile will be scaled to match this peak."
+            )
+            st.session_state.project_data['demand_growth_percentage'] = None 
+        else: # Percentage Growth
+            st.session_state.project_data['demand_growth_percentage'] = st.number_input(
+                "Annual Demand Growth (%)",
+                value=st.session_state.project_data.get('demand_growth_percentage', 2.0),
+                min_value=-100.0, step=0.1, format="%.1f",
+                help="Annual percentage growth in electricity demand from base year."
+            )
+            st.session_state.project_data['target_peak_demand'] = None
+    
     st.session_state.project_data['line_expansion'] = st.checkbox(
         "Enable Line Expansion",
         value=st.session_state.project_data.get('line_expansion', False),
@@ -179,7 +202,15 @@ def show_tab():
                 st.error("Results Directory is mandatory.")
             elif not st.session_state.project_data.get('scenario_name'):
                 st.error("Scenario Name is mandatory.")
-            elif st.session_state.excel_file_buffer is None:
+            elif st.session_state.project_data.get('scenario_year') is None:
+                st.error("Scenario Year is mandatory.")
+            
+            if demand_projection_method == "Target Peak Demand" and st.session_state.project_data.get('target_peak_demand') is None:
+                st.error("Target Peak Demand is mandatory for selected projection method.")
+            elif demand_projection_method == "Percentage Growth" and st.session_state.project_data.get('demand_growth_percentage') is None:
+                st.error("Annual Demand Growth (%) is mandatory for selected projection method.")
+            
+            if st.session_state.excel_file_buffer is None:
                  st.error("Please upload the main Excel data file to proceed.")
             else:
                 st.session_state.current_tab_index = 2

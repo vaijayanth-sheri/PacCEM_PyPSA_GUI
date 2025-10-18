@@ -12,7 +12,7 @@ def show_tab():
     1.  **Project Tab:** Start by defining your project name, results directory, and scenario-specific parameters like solver, CO2 cap, RE share, and technology cost multipliers. You will also upload your main Excel data file here.
     2.  **Data Mapping Tab:** Map the sheets and columns from your uploaded Excel file to the required PyPSA components. Alternatively, you can manually enter data directly into interactive tables.
     3.  **Simulation Tab:** Once all data is mapped and saved, initiate the simulation. You can monitor the progress through a live log feed and visualize network buses on an interactive map. Download comprehensive results after completion.
-    4.  **Compare Tab:** Upload results from single or multiple scenarios (CSV files) to generate interactive plots for comparative analysis.
+    4.  **Compare Tab:** Upload results from single or multiple scenarios (NetCDF files) to compare key numerical metrics across different scenarios.
     """)
 
     st.subheader("Built with")
@@ -34,7 +34,6 @@ def show_tab():
     st.subheader("Builder Information")
     st.info("Developed by a dedicated team to democratize access to power system modeling.")
 
-    # Navigation buttons (only Next for the first tab)
     col1, col2 = st.columns([1, 10])
     with col2:
         if st.button("Next >", key="about_next"):

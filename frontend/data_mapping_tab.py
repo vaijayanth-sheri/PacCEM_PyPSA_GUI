@@ -31,12 +31,14 @@ def column_selector(component_type, attribute_name, columns, default_value=None)
         )
         if selected_col != "-- Select --":
             st.session_state.mapped_data[component_type][attribute_name] = selected_col
+            return selected_col # Return selected value
         else:
             st.session_state.mapped_data[component_type].pop(attribute_name, None) # Remove if unselected
-            
+            return None
     else:
         st.warning(f"No columns available for {component_type}. Please select a sheet first.")
-        st.session_state.mapped_data[component_type].pop(attribute_name, None) # Ensure no mapping if no columns
+        st.session_state.mapped_data[component_type].pop(attribute_name, None) # Ensure no mapping if no mapping selected
+        return None
 
 # Helper to render data editor for manual entry
 def manual_data_editor(component_type, default_cols):
@@ -70,15 +72,14 @@ def show_tab():
     if 'data_mapping_mode' not in st.session_state:
         st.session_state.data_mapping_mode = {}
     
-    # CURRENCY: Updated column names to USD
     component_types_spec = {
-        "buses": ['Bus name', 'V_nom', 'x', 'y', 'Carriers'],
-        "demand": [],
-        "generators": ['Generator name', 'Bus', 'Size (MW)', 'Quantity', 'Build Year', 'Capacity(MW)', 'P_nom_min', 'P_nom_max', 'Carrier', 'Scenario', 'p_nom_extendable', 'Variable cost (USD/MWh)', 'Capital_cost (USD/MW)', 'lifetime', 'Status', 'efficiency', 'min_generation_level'],
-        "transmission_lines": ['From', 'To', 'type', 's_nom_extendable', 's_nom', 'Capital_cost (USD/MW/km)', 'Length (kM)'],
-        "transformers": ['Location', 'bus0', 'bus1', 's_nom', 'v_nom0', 'v_nom1', 'x', 'r', 'Capital_cost (USD)'],
-        "storage": ['name', 'Capacity(MW)', 'Year', 'Carrier', 'Bus', 'Scenario', 'e_nom_extendable', 'Variable cost (USD/MWh)', 'Capital_cost (USD/MWh)', 'lifetime', 'Status'],
-        "generation_profiles": ['Solar profile', 'Wind profile', 'Hydro profile']
+        "buses": ['Bus name', 'v_nom', 'x', 'y', 'carrier', 'unit'],
+        "demand": [], # Special handling for demand (all columns are data)
+        "generators": ['Generator name', 'Bus', 'Capacity(MW)', 'Size (MW)', 'Quantity', 'Build Year', 'P_nom_min', 'P_nom_max', 'Carrier', 'Scenario', 'p_nom_extendable', 'Marginal cost (USD/MWh)', 'Capital_cost (USD/MW)', 'fixed_O&M (USD/MW)', 'lifetime', 'Status', 'efficiency', 'min_generation_level'],
+        "transmission_lines": ['From', 'To', 'type', 's_nom_extendable', 's_nom', 'Capital_cost (USD/MVA)', 'Length (kM)'],
+        "transformers": ['Location', 'bus0', 'bus1', 's_nom', 'v_nom0', 'v_nom1', 'x', 'r', 'Capital_cost (USD/MW)'],
+        'storage': ['name', 'p_nom (MW)', 'e_nom (MWh)', 'Year', 'Carrier', 'Bus', 'Scenario', 'e_nom_extendable', 'Marginal cost (USD/MWh)', 'Capital_cost (USD/MWh)', 'lifetime', 'Status'],
+        "generation_profiles": ['Solar profile', 'Solar Rooftop profile', 'Wind profile', 'Hydro profile'] # Added Solar Rooftop profile
     }
 
     sub_tab_names = list(component_types_spec.keys())
@@ -121,19 +122,38 @@ def show_tab():
                     elif component_type == "generation_profiles":
                         enabled_techs = st.session_state.project_data.get('enabled_techs', {})
                         st.info("Select profile columns for enabled renewable technologies.")
+                        
+                        selected_profiles_data = {}
                         if df_current_sheet is not None:
-                            st.dataframe(df_current_sheet.head())
-                            for profile_col in ['Solar profile', 'Wind profile', 'Hydro profile']:
-                                tech_name = profile_col.split(' ')[0]
-                                if enabled_techs.get(tech_name, False):
-                                    column_selector(component_type, profile_col, current_sheet_cols)
+                            st.dataframe(df_current_sheet.head()) # Show preview
+                            
+                            # Loop over all potential profile columns
+                            for profile_col_key in ['Solar profile', 'Solar Rooftop profile', 'Wind profile', 'Hydro profile']:
+                                # Determine the corresponding technology name
+                                if 'Solar Rooftop' in profile_col_key:
+                                    tech_name = 'Solar Rooftop'
                                 else:
-                                    st.session_state.mapped_data[component_type].pop(profile_col, None)
-                                    st.info(f"{tech_name} is disabled in Project tab, skipping profile mapping.")
-                            st.session_state.mapped_data[component_type]['df_content'] = df_current_sheet.to_dict('list')
+                                    tech_name = profile_col_key.split(' ')[0]
+                                
+                                # Only display the column selector and process if the technology is enabled
+                                if enabled_techs.get(tech_name, False):
+                                    mapped_excel_col_name = column_selector(component_type, profile_col_key, current_sheet_cols)
+                                    
+                                    if mapped_excel_col_name and mapped_excel_col_name in df_current_sheet.columns:
+                                        selected_profiles_data[profile_col_key] = df_current_sheet[mapped_excel_col_name].astype(float).tolist()
+                                    else:
+                                        st.warning(f"'{tech_name}' is enabled but no profile column selected for '{profile_col_key}'. This technology will generate 0 power.")
+                                        st.session_state.mapped_data[component_type].pop(profile_col_key, None) 
+                                        selected_profiles_data[profile_col_key] = None # Indicate explicitly missing profile
+                                else:
+                                    st.info(f"'{tech_name}' is disabled in Project tab, skipping profile column selection for '{profile_col_key}'.")
+                                    st.session_state.mapped_data[component_type].pop(profile_col_key, None)
+                            
+                            st.session_state.mapped_data[component_type]['df_content'] = selected_profiles_data
+                        
                     else:
                         st.dataframe(df_current_sheet.head())
-                        for col_name in component_types_spec[component_type]: # Use the spec for column names
+                        for col_name in component_types_spec[component_type]:
                             column_selector(component_type, col_name, current_sheet_cols)
                         st.session_state.mapped_data[component_type]['df_content'] = df_current_sheet.to_dict('list')
                 else:
@@ -142,10 +162,9 @@ def show_tab():
                     st.warning("Please select a sheet to proceed with mapping.")
             
             else: # Manual Entry
-                # Use the spec for manual data columns
                 manual_data_editor(component_type, component_types_spec[component_type] if component_type != "demand" else ['Bus'] + [f'Time_{i}' for i in range(8760)])
                 if component_type == "generation_profiles":
-                    st.warning("For manual generation profiles, ensure you enter 8760 hourly values for each enabled technology.")
+                    st.warning("For manual generation profiles, ensure you enter 8760 hourly values for each enabled technology (values between 0 and 1). If a profile is missing for an enabled technology, it will generate 0 power.")
 
 
             if st.button(f"Save {component_type.replace('_', ' ').title()} Data", key=f"save_data_{component_type}"):
